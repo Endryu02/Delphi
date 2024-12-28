@@ -11,6 +11,7 @@ object Form5: TForm5
   Font.Name = 'Segoe UI'
   Font.Style = []
   OnCreate = FormCreate
+  OnMouseWheel = FormMouseWheel
   TextHeight = 15
   object PaintBox: TPaintBox
     Left = 0

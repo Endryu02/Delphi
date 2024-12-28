@@ -9,6 +9,10 @@ uses
 type
   T2DPoint = record
     X, Y: Single;
+    class operator Subtract(const p1, p2: T2DPoint): T2DPoint;
+    class operator Multiply(const d: double; const p: T2DPoint): T2DPoint;
+    function Length: double;
+    constructor Create(const x, y: double);
   end;
 
   ICanvas = interface
@@ -19,9 +23,6 @@ type
     procedure MoveTo(const x, y: Single);
     procedure LineTo(const x, y: Single);
     procedure AddVertex(const p: T2DPoint);
-    procedure DrawRectangle(const x1, y1, x2, y2: Integer);
-    procedure DrawEllipse(const x1, y1, x2, y2: Integer);
-    function GetCanvas: TCanvas;
   end;
 
   TShape = class
@@ -30,7 +31,7 @@ type
     LineWidth: Integer;
     IsSelected: Boolean;
     procedure Draw(const c: ICanvas); virtual; abstract;
-    function IsPointInside(const x, y: Single): Boolean; virtual; abstract;
+    function IsPointInside(const x, y, tol: Single): Boolean; virtual; abstract;
     procedure MoveTo(const dx, dy: Single); virtual; abstract;
   end;
 
@@ -38,7 +39,7 @@ type
   public
     P1, P2: T2DPoint;
     procedure Draw(const c: ICanvas); override;
-    function IsPointInside(const x, y: Single): Boolean; override;
+    function IsPointInside(const x, y, tol: Single): Boolean; override;
     procedure MoveTo(const dx, dy: Single); override;
   end;
 
@@ -46,7 +47,7 @@ type
   public
     P1, P2: T2DPoint;
     procedure Draw(const c: ICanvas); override;
-    function IsPointInside(const x, y: Single): Boolean; override;
+    function IsPointInside(const x, y, tol: Single): Boolean; override;
     procedure MoveTo(const dx, dy: Single); override;
   end;
 
@@ -55,7 +56,7 @@ type
     Center: T2DPoint;
     Radius: Single;
     procedure Draw(const c: ICanvas); override;
-    function IsPointInside(const x, y: Single): Boolean; override;
+    function IsPointInside(const x, y, tol: Single): Boolean; override;
     procedure MoveTo(const dx, dy: Single); override;
   end;
 
@@ -64,9 +65,11 @@ type
     FCanvas: TCanvas;
     fIsStarted: Boolean;
     fxmin, fymin, fxmax, fymax: Single;
+    fLockedStyle: boolean;
     procedure SetBounds(const xmin, ymin, xmax, ymax: Single);
     function GetWidth: Integer;
     function GetHeight: Integer;
+    function GetScaleFactor: double;
   public
     constructor Create(ACanvas: TCanvas);
     procedure SetCurrentColor(c: TColor);
@@ -81,6 +84,12 @@ type
     function PointToPixel(const p: T2DPoint): TPoint;
     function PixelToPoint(const p: TPoint): T2DPoint;
     function GetCanvas: TCanvas;
+    property xmin: single read fxmin write fxmin;
+    property ymin: single read fymin write fymin;
+    property xmax: single read fxmax write fxmax;
+    property ymax: single read fymax write fymax;
+    property LockedStyle: boolean read fLockedStyle write fLockedStyle;
+    property ScaleFactor: double read GetScaleFactor;
   end;
 
   TForm5 = class(TForm)
@@ -105,6 +114,8 @@ type
     procedure PaintBoxPaint(Sender: TObject);
     procedure ColorBoxChange(Sender: TObject);
     procedure PaintBoxMouseWheel(Sender: TObject; Shift: TShiftState; WheelDelta: Integer; MousePos: TPoint; var Handled: Boolean);
+    procedure FormMouseWheel(Sender: TObject; Shift: TShiftState;
+      WheelDelta: Integer; MousePos: TPoint; var Handled: Boolean);
   private
     Shapes: TObjectList<TShape>;
     CurrentTool: string;
@@ -117,19 +128,45 @@ type
     ZoomFactor: Single;
     PanOffset: T2DPoint;
     IsPanning: Boolean;
-    StartPanPoint: TPoint;
+    StartPanPoint: T2DPoint;
+    fCanvas: TCanvasAdapter;
     procedure DrawTemporaryShape(CanvasAdapter: TCanvasAdapter);
     procedure MoveSelectedObject(const dx, dy: Single);
     procedure SelectObject(const x, y: Single);
-    function ScreenToWorld(const ScreenPoint: T2DPoint): T2DPoint;
+    function ScreenToWorld(const ScreenPoint: TPoint): T2DPoint;
     function WorldToScreen(const WorldPoint: T2DPoint): TPoint;
   public
   end;
+
+  function PointLineDist(const p, p1, p2: T2DPoint): double;
+  function Dot(const p1, p2: T2DPoint): double;
 
 var
   Form5: TForm5;
 
 implementation
+
+
+function Dot(const p1, p2: T2DPoint): double;
+begin
+  result := p1.x*p2.x+p1.y*p2.y;
+end;
+
+function PointLineDist(const p, p1, p2: T2DPoint): double;
+begin
+  var v1 := p2-p1;
+  var v2 := p-p1;
+  var L1 := v1.Length;
+  v1 := 1/L1*v1;
+  var x := Dot(v1, v2);
+  if (x<0) then begin
+    result := v2.Length;
+  end else if (x>L1) then begin
+    result := (p-p2).Length;
+  end else begin
+    result := (v2-x*v1).Length;
+  end;
+end;
 
 {$R *.dfm}
 
@@ -153,12 +190,16 @@ end;
 
 procedure TCanvasAdapter.SetCurrentColor(c: TColor);
 begin
+  if fLockedStyle then
+    exit;
   if FCanvas <> nil then
     FCanvas.Pen.Color := c;
 end;
 
 procedure TCanvasAdapter.SetCurrentLineWidth(lw: Integer);
 begin
+  if fLockedStyle then
+    exit;
   if FCanvas <> nil then
     FCanvas.Pen.Width := lw;
 end;
@@ -177,7 +218,7 @@ procedure TCanvasAdapter.MoveTo(const x, y: Single);
 var
   pp: TPoint;
 begin
-  pp := PointToPixel(T2DPoint(x, y));
+  pp := PointToPixel(T2DPoint.Create(x, y));
   FCanvas.MoveTo(pp.X, pp.Y);
 end;
 
@@ -185,7 +226,7 @@ procedure TCanvasAdapter.LineTo(const x, y: Single);
 var
   pp: TPoint;
 begin
-  pp := PointToPixel(T2DPoint(x, y));
+  pp := PointToPixel(T2DPoint.Create(x, y));
   FCanvas.LineTo(pp.X, pp.Y);
 end;
 
@@ -235,6 +276,11 @@ begin
   Result := FCanvas.ClipRect.Height;
 end;
 
+function TCanvasAdapter.GetScaleFactor: double;
+begin
+  result := (fxmax-fxmin)/self.GetWidth;
+end;
+
 function TCanvasAdapter.GetCanvas: TCanvas;
 begin
   Result := FCanvas;
@@ -252,29 +298,12 @@ begin
   c.EndDraw;
 end;
 
-function TLine.IsPointInside(const x, y: Single): Boolean;
+function TLine.IsPointInside(const x, y, tol: Single): Boolean;
 var
-  dx, dy, len, dist: Single;
+  d: Single;
 begin
-  dx := P2.X - P1.X;
-  dy := P2.Y - P1.Y;
-  len := dx * dx + dy * dy;
-  if len = 0 then
-  begin
-    dist := Sqrt(Sqr(x - P1.X) + Sqr(y - P1.Y));
-  end
-  else
-  begin
-    dist := Abs((dy * (x - P1.X) - dx * (y - P1.Y)) / Sqrt(len));
-    if dist < LineWidth / 2 then
-    begin
-      Result := True;
-      Exit;
-    end;
-    dist := Min(Sqrt(Sqr(x - P1.X) + Sqr(y - P1.Y)),
-                Sqrt(Sqr(x - P2.X) + Sqr(y - P2.Y)));
-    Result := dist < LineWidth / 2;
-  end;
+  d := PointLineDist(T2DPoint.Create(x, y), self.P1, self.P2);
+  result := d<tol;
 end;
 
 procedure TLine.MoveTo(const dx, dy: Single);
@@ -291,17 +320,9 @@ procedure TRectangle.Draw(const c: ICanvas);
 var
   CanvasAdapter: TCanvasAdapter;
 begin
-  CanvasAdapter := TCanvasAdapter.Create(c.GetCanvas);
-  try
-    CanvasAdapter.SetCurrentColor(Color);
-    CanvasAdapter.SetCurrentLineWidth(LineWidth);
-    CanvasAdapter.DrawRectangle(Round(P1.X), Round(P1.Y), Round(P2.X), Round(P2.Y));
-  finally
-    CanvasAdapter.Free;
-  end;
 end;
 
-function TRectangle.IsPointInside(const x, y: Single): Boolean;
+function TRectangle.IsPointInside(const x, y, tol: Single): Boolean;
 var
   min_x, max_x, min_y, max_y: Single;
 begin
@@ -327,20 +348,21 @@ procedure TCircle.Draw(const c: ICanvas);
 var
   CanvasAdapter: TCanvasAdapter;
 begin
-  CanvasAdapter := TCanvasAdapter.Create(c.GetCanvas);
-  try
-    CanvasAdapter.SetCurrentColor(Color);
-    CanvasAdapter.SetCurrentLineWidth(LineWidth);
-    CanvasAdapter.DrawEllipse(Round(Center.X - Radius), Round(Center.Y - Radius),
-                              Round(Center.X + Radius), Round(Center.Y + Radius));
-  finally
-    CanvasAdapter.Free;
+  c.SetCurrentColor(Color);
+  c.SetCurrentLineWidth(LineWidth);
+  c.BeginDraw;
+  const n=64;
+  for var i := 0 to n do begin
+    var a := i*2*Pi/n;
+    c.AddVertex(T2DPoint.Create(Center.x+cos(a)*Radius, Center.y+sin(a)*Radius));
   end;
+  c.EndDraw;
 end;
 
-function TCircle.IsPointInside(const x, y: Single): Boolean;
+function TCircle.IsPointInside(const x, y, tol: Single): Boolean;
 begin
-  Result := Sqrt(Sqr(x - Center.X) + Sqr(y - Center.Y)) <= Radius + LineWidth / 2;
+  var d := (T2DPoint.Create(x,y)-Center).Length-Radius;
+  result := abs(d)<Tol;
 end;
 
 procedure TCircle.MoveTo(const dx, dy: Single);
@@ -360,16 +382,25 @@ begin
   PanOffset.X := 0;
   PanOffset.Y := 0;
   IsPanning := False;
+  self.doubleBuffered := true;
 
   cmbLineWidth.Items.AddStrings(['1', '2', '3', '4', '5']);
   cmbLineWidth.ItemIndex := 0;
 
   ColorBox.Selected := clBlack;
+  fCanvas := TCanvasAdapter.Create(PaintBox.Canvas);
+  fCanvas.SetBounds(0, 0, PaintBox.Width, PaintBox.Height);
 end;
 
 procedure TForm5.FormDestroy(Sender: TObject);
 begin
   Shapes.Free;
+end;
+
+procedure TForm5.FormMouseWheel(Sender: TObject; Shift: TShiftState;
+  WheelDelta: Integer; MousePos: TPoint; var Handled: Boolean);
+begin
+  PaintBoxMouseWheel(Sender, Shift, WheelDelta, PaintBox.ScreenToClient(MousePos), Handled);
 end;
 
 procedure TForm5.btnLineClick(Sender: TObject);
@@ -402,11 +433,11 @@ begin
   if Button = mbRight then
   begin
     IsPanning := True;
-    StartPanPoint := Point(X, Y);
+    StartPanPoint := fCanvas.PixelToPoint(TPoint.Create(X, Y));
   end
   else
   begin
-    StartPoint := ScreenToWorld(T2DPoint(X, Y));
+    StartPoint := fCanvas.PixelToPoint(TPoint.Create(X, Y));
     IsDrawing := True;
 
     if CurrentTool = 'Selection' then
@@ -421,26 +452,26 @@ procedure TForm5.PaintBoxMouseMove(Sender: TObject; Shift: TShiftState; X, Y: In
 var
   p: T2DPoint;
 begin
+  p := fCanvas.PixelToPoint(TPoint.Create(X, Y));
   if IsPanning and (ssRight in Shift) then
   begin
-    PanOffset.X := PanOffset.X + (X - StartPanPoint.X) / ZoomFactor;
-    PanOffset.Y := PanOffset.Y + (Y - StartPanPoint.Y) / ZoomFactor;
-    StartPanPoint := Point(X, Y);
+    var dx := -(p.X - StartPanPoint.X);
+    var dy := -(p.Y - StartPanPoint.Y);
+    fCanvas.SetBounds(fCanvas.xmin+dx, fCanvas.ymin+dy, fCanvas.xmax+dx, fCanvas.ymax+dy);
     PaintBox.Invalidate;
   end
   else if IsSelecting and (SelectedObject <> nil) then
   begin
-    MoveSelectedObject((X - StartPanPoint.X) / ZoomFactor, (Y - StartPanPoint.Y) / ZoomFactor);
-    StartPanPoint := Point(X, Y);
+    MoveSelectedObject(p.x-StartPoint.x, p.y-StartPoint.y);
+    StartPoint := p;
     PaintBox.Invalidate;
   end
   else if IsDrawing then
   begin
-    EndPoint := ScreenToWorld(T2DPoint(X, Y));
+    EndPoint := p;
     PaintBox.Invalidate;
   end;
 
-  p := ScreenToWorld(T2DPoint(X, Y));
   if not IsPanning and not IsSelecting then
     SelectObject(p.X, p.Y);
 end;
@@ -458,7 +489,7 @@ begin
 
     if CurrentTool <> 'Selection' then
     begin
-      EndPoint := ScreenToWorld(T2DPoint(X, Y));
+      EndPoint := fCanvas.PixelToPoint(TPoint.Create(X, Y));
 
       if CurrentTool = 'Line' then
       begin
@@ -504,9 +535,8 @@ var
   Shape: TShape;
   WorldStart, WorldEnd: T2DPoint;
 begin
-  CanvasAdapter := TCanvasAdapter.Create(PaintBox.Canvas);
+  CanvasAdapter := fCanvas;
   try
-    CanvasAdapter.SetBounds(PanOffset.X, PanOffset.Y, PanOffset.X + PaintBox.Width / ZoomFactor, PanOffset.Y + PaintBox.Height / ZoomFactor);
 
     // Draw all shapes
     for Shape in Shapes do
@@ -515,27 +545,30 @@ begin
       if Shape.IsSelected then
       begin
         CanvasAdapter.SetCurrentColor(clRed);
-        CanvasAdapter.SetCurrentLineWidth(1);
-        if Shape is TLine then
-        begin
-          WorldStart := TLine(Shape).P1;
-          WorldEnd := TLine(Shape).P2;
-          CanvasAdapter.DrawRectangle(Round(WorldStart.X - 2), Round(WorldStart.Y - 2), Round(WorldEnd.X + 2), Round(WorldEnd.Y + 2));
-        end
-        else if Shape is TRectangle then
-        begin
-          WorldStart := TRectangle(Shape).P1;
-          WorldEnd := TRectangle(Shape).P2;
-          CanvasAdapter.DrawRectangle(Round(WorldStart.X - 2), Round(WorldStart.Y - 2), Round(WorldEnd.X + 2), Round(WorldEnd.Y + 2));
-        end
-        else if Shape is TCircle then
-        begin
-          WorldStart.X := TCircle(Shape).Center.X - TCircle(Shape).Radius;
-          WorldStart.Y := TCircle(Shape).Center.Y - TCircle(Shape).Radius;
-          WorldEnd.X := TCircle(Shape).Center.X + TCircle(Shape).Radius;
-          WorldEnd.Y := TCircle(Shape).Center.Y + TCircle(Shape).Radius;
-          CanvasAdapter.DrawEllipse(Round(WorldStart.X - 2), Round(WorldStart.Y - 2), Round(WorldEnd.X + 2), Round(WorldEnd.Y + 2));
-        end;
+        CanvasAdapter.SetCurrentLineWidth(2);
+        CanvasAdapter.LockedStyle := true;
+        Shape.Draw(CanvasAdapter);
+        CanvasAdapter.LockedStyle := false;
+//        if Shape is TLine then
+//        begin
+//          WorldStart := TLine(Shape).P1;
+//          WorldEnd := TLine(Shape).P2;
+//          CanvasAdapter.DrawRectangle(Round(WorldStart.X - 2), Round(WorldStart.Y - 2), Round(WorldEnd.X + 2), Round(WorldEnd.Y + 2));
+//        end
+//        else if Shape is TRectangle then
+//        begin
+//          WorldStart := TRectangle(Shape).P1;
+//          WorldEnd := TRectangle(Shape).P2;
+//          CanvasAdapter.DrawRectangle(Round(WorldStart.X - 2), Round(WorldStart.Y - 2), Round(WorldEnd.X + 2), Round(WorldEnd.Y + 2));
+//        end
+//        else if Shape is TCircle then
+//        begin
+//          WorldStart.X := TCircle(Shape).Center.X - TCircle(Shape).Radius;
+//          WorldStart.Y := TCircle(Shape).Center.Y - TCircle(Shape).Radius;
+//          WorldEnd.X := TCircle(Shape).Center.X + TCircle(Shape).Radius;
+//          WorldEnd.Y := TCircle(Shape).Center.Y + TCircle(Shape).Radius;
+//          CanvasAdapter.DrawEllipse(Round(WorldStart.X - 2), Round(WorldStart.Y - 2), Round(WorldEnd.X + 2), Round(WorldEnd.Y + 2));
+//        end;
       end;
     end;
 
@@ -543,7 +576,6 @@ begin
     if IsDrawing then
       DrawTemporaryShape(CanvasAdapter);
   finally
-    CanvasAdapter.Free;
   end;
 end;
 
@@ -590,17 +622,22 @@ procedure TForm5.SelectObject(const x, y: Single);
 var
   i: Integer;
 begin
+  if SelectedObject<>nil then
+    SelectedObject.IsSelected := false;
+  var so := SelectedObject;
+  SelectedObject := nil;
+  var tol := 10*fCanvas.ScaleFactor;
   for i := 0 to Shapes.Count - 1 do
   begin
-    if Shapes[i].IsPointInside(x, y) then
+    if Shapes[i].IsPointInside(x, y, tol) then
     begin
-      if Assigned(SelectedObject) then
-        SelectedObject.IsSelected := False;
       SelectedObject := Shapes[i];
       SelectedObject.IsSelected := True;
       Break;
     end;
   end;
+  if (so<>SelectedObject) then
+    PaintBox.Repaint;
 end;
 
 procedure TForm5.MoveSelectedObject(const dx, dy: Single);
@@ -612,38 +649,53 @@ begin
   end;
 end;
 
-function TForm5.ScreenToWorld(const ScreenPoint: T2DPoint): T2DPoint;
+function TForm5.ScreenToWorld(const ScreenPoint: TPoint): T2DPoint;
 begin
-  Result.X := (ScreenPoint.X - PanOffset.X) / ZoomFactor;
-  Result.Y := (ScreenPoint.Y - PanOffset.Y) / ZoomFactor;
+  result := fCanvas.PixelToPoint(ScreenPoint);
 end;
 
 function TForm5.WorldToScreen(const WorldPoint: T2DPoint): TPoint;
 begin
-  Result.X := Round((WorldPoint.X * ZoomFactor) + PanOffset.X);
-  Result.Y := Round((WorldPoint.Y * ZoomFactor) + PanOffset.Y);
+  result := fCanvas.PointToPixel(WorldPoint);
 end;
 
 procedure TForm5.PaintBoxMouseWheel(Sender: TObject; Shift: TShiftState; WheelDelta: Integer; MousePos: TPoint; var Handled: Boolean);
-var
-  oldZoom: Single;
 begin
-  oldZoom := ZoomFactor;
-  if WheelDelta > 0 then
-    ZoomFactor := ZoomFactor * 1.1
-  else
-    ZoomFactor := ZoomFactor / 1.1;
-
-  if ZoomFactor < 0.1 then
-    ZoomFactor := 0.1
-  else if ZoomFactor > 10 then
-    ZoomFactor := 10;
-
-  PanOffset.X := PanOffset.X + (MousePos.X / oldZoom - MousePos.X / ZoomFactor);
-  PanOffset.Y := PanOffset.Y + (MousePos.Y / oldZoom - MousePos.Y / ZoomFactor);
-
+  var p := fCanvas.PixelToPoint(MousePos);
+  var k := 1.2;
+  if WheelDelta>0 then
+    k := 1/k;
+  fCanvas.xmin := p.x+k*(fcanvas.xmin-p.x);
+  fCanvas.xmax := p.x+k*(fcanvas.xmax-p.x);
+  fCanvas.ymin := p.y+k*(fcanvas.ymin-p.y);
+  fCanvas.ymax := p.y+k*(fcanvas.ymax-p.y);
   PaintBox.Invalidate;
   Handled := True;
+end;
+
+{ T2DPoint }
+
+constructor T2DPoint.Create(const x, y: double);
+begin
+  self.x := x;
+  self.y := y;
+end;
+
+function T2DPoint.Length: double;
+begin
+  result := sqrt(x*x+y*y);
+end;
+
+class operator T2DPoint.Multiply(const d: double; const p: T2DPoint): T2DPoint;
+begin
+  result.x := d*p.x;
+  result.y := d*p.y;
+end;
+
+class operator T2DPoint.Subtract(const p1, p2: T2DPoint): T2DPoint;
+begin
+  result.x := p2.x-p1.x;
+  result.y := p2.y-p1.y;
 end;
 
 end.
